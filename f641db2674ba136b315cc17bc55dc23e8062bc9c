@@ -1,0 +1,155 @@
+---
+date: '2025-12-17'
+id: 20251217-use-icommandrunner-interface-for-testable-cli
+status: proposed
+title: Use ICommandRunner interface for testable CLI execution
+---
+
+# Use ICommandRunner interface for testable CLI execution
+
+## Context and Problem Statement
+
+The VS Code extension integrates with an external git-adr CLI to create and read ADR files. Current approaches that invoke the CLI directly (child_process.spawn / exec) from production code make unit/integration testing brittle and slow:
+
+- Tests that exercise CLI flows spawn real processes, depend on the environment (installed CLI, PATH, OS), and can be flaky on CI.
+- Simulating error conditions (timeouts, partial output, specific exit codes, malformed output) is hard and slow when relying on real CLI binaries.
+- Current code mixes process orchestration, streaming/stdout parsing, and business logic in places that are hard to isolate and mock.
+- We need deterministic, fast tests that cover all error paths, and a maintainable extension architecture that clearly separates concerns.
+
+We therefore need a small, explicit abstraction for CLI execution that enables injecting either a real process runner in production or a deterministic mock in tests.
+
+Interface (exact shape to be used):
+
+```ts
+interface ICommandRunner {
+  run(
+    command: string,
+    args: string[],
+    options: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv }
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+}
+```
+
+Production runner and test runner patterns:
+- Production: RealCommandRunner uses Node's `child_process.spawn` (streaming, timeout handling, env / cwd control).
+- Testing: MockCommandRunner returns deterministic fixtures and can simulate errors, timeouts, and edge cases.
+
+Injection strategy:
+- Primary: factory function createExtensionContext(deps) that accepts an ICommandRunner implementation as part of deps. The extension uses that factory in activation.
+- Alternative (test-only): a setter to replace the runner at runtime, gated behind `VSCODE_GIT_ADR_TESTING=1` to avoid accidental production usage.
+
+## Decision Drivers
+
+- Testability: Ability to write fast, deterministic unit tests without spawning the actual CLI.
+- Isolation: Complete separation between business logic and external process execution.
+- Observability & Simulation: Need to simulate timeouts, non-zero exit codes, partial stdout/stderr, long-running processes, and platform-specific edge cases.
+- Minimal production overhead: Abstraction should add minimal runtime cost and implementation complexity.
+- Maintainability: Clean DI pattern so responsibilities are clear and easier to refactor.
+- Safety: Prevent accidental replacement of production runner in released extension builds.
+- Compatibility with VS Code extension activation model and typical testing frameworks (Mocha/Jest).
+
+## Considered Options
+
+- Direct child_process.spawn in every call site
+  - Pros: Minimal code, no abstraction.
+  - Cons: Hard-to-test, duplicated spawn/error handling, brittle tests, environment-dependent.
+
+- Wrap spawn in utility functions (ad-hoc helpers) not formalized as an interface
+  - Pros: Some reuse, lower initial cost.
+  - Cons: Hard to inject mocks in tests, encourages global imports and accidental usage of helper in tests.
+
+- Use a small explicit ICommandRunner interface with:
+  - RealCommandRunner implemented using child_process.spawn
+  - MockCommandRunner for tests
+  - DI via createExtensionContext(deps) OR test-only setter gated by env var
+  - Pros: Clear DI boundary, testable, minimal surface area
+  - Cons: Adds one abstraction and requires discipline to inject dependencies.
+
+- Use a full-featured third-party process library (e.g., execa) directly everywhere
+  - Pros: Robust process handling (timeouts, cross-platform), less boilerplate.
+  - Cons: Still needs abstraction to mock in tests; coupling to third-party API; added dependency.
+
+- Rely on integration tests that run the real CLI in CI only
+  - Pros: Validates real CLI behavior.
+  - Cons: Slow, flaky locally, cannot simulate many edge cases deterministically. Must be used alongside unit tests — does not solve unit-level isolation.
+
+## Decision Outcome
+
+Chosen option:
+- Introduce and use the ICommandRunner interface (as specified above) for all CLI invocations in the extension.
+- Implement RealCommandRunner for production using Node `child_process.spawn`, with careful handling of stdout/stderr streaming, timeout implementation (kill on timeout, return deterministic exitCode/diagnostic), and proper env/cwd handling.
+- Implement MockCommandRunner for tests returning deterministic fixtures and allowing explicit simulation of:
+  - specific stdout/stderr payloads
+  - non-zero exit codes
+  - timeouts
+  - partial streaming behavior (if needed for complex parsing tests)
+- Provide a clean dependency injection surface:
+  - Primary method: createExtensionContext(deps) — a factory that builds the extension using provided dependencies including ICommandRunner. In production `deps.commandRunner` defaults to a new RealCommandRunner().
+  - Test method: tests invoke createExtensionContext({ commandRunner: new MockCommandRunner(...) }) to get a fully testable extension instance.
+  - As a safety net for legacy tests, optionally expose a test-only setter to swap the ICommandRunner at runtime. This setter must only be active when `process.env.VSCODE_GIT_ADR_TESTING === '1'` to avoid accidental runtime changes in production.
+
+Justification:
+- The interface is small and focused, minimizes the mocking surface and complexity.
+- Dependency injection via factory enables per-test configuration without global state while fitting cleanly into the VS Code activation lifecycle.
+- MockCommandRunner enables deterministic, fast tests and comprehensive simulation of error and timeout cases that are impractical or slow with a real CLI.
+- Implementation cost is low compared to the long-term benefits in test reliability and maintainability.
+
+## Consequences
+
+Good
+- Test isolation:
+  - Unit tests and CI runs do not require the git-adr CLI binary installed.
+  - Tests run faster and deterministically.
+- Complete simulation:
+  - MockCommandRunner can easily simulate exit codes, stdout/stderr content, partial output, long-running processes and timeouts.
+  - Edge-case coverage is affordable (e.g., malformed output, truncated stdout, specific stderr messages).
+- Clear separation:
+  - Business logic does not depend on process orchestration details.
+  - Responsibilities are clearly separated: ICommandRunner implementations manage process lifecycle; extension logic parses outputs and handles results.
+- Minimal runtime overhead:
+  - The abstraction is a lightweight interface with a single async method; production cost is negligible.
+- Safer testing practices:
+  - `VSCODE_GIT_ADR_TESTING` gating prevents accidental swapping of the runner in production.
+
+Bad
+- Additional abstraction to maintain:
+  - New interface must be kept stable and documented. Any change impacts production and tests.
+- Mock drift risk:
+  - If MockCommandRunner behavior diverges from RealCommandRunner (e.g., different quoting/encoding/exit-code behavior) tests could pass while production fails.
+  - Mitigation: add a small set of smoke/integration tests that exercise RealCommandRunner against the real binary on a CI job (optional, can be gated).
+- Slight complexity in wiring:
+  - Call sites must accept the injected runner (or obtain it from the created extension context) rather than calling a global spawn helper. This requires refactoring call sites when introducing the DI pattern.
+- Timeout/kill semantics must be defined and documented:
+  - The implementation must decide and document how timeouts are reported (e.g., special exitCode or an error) and how signals are mapped to exit codes so callers can handle timeout cases deterministically.
+
+Neutral
+- Cross-platform behavior:
+  - RealCommandRunner still needs careful handling of platform differences (Windows vs POSIX) for signal semantics, quoting and PATH. The interface does not solve these but centralizes the handling.
+- Choice of underlying process primitive:
+  - RealCommandRunner will use `child_process.spawn`; if later replaced by `execa` it’s a local change behind the interface and does not affect consumers.
+- Documentation and onboarding:
+  - Developers need to follow the DI pattern when adding CLI calls. This is a small behavioral change but becomes the established pattern.
+
+Implementation notes / checklist (technical)
+- RealCommandRunner responsibilities:
+  - Use child_process.spawn with options { cwd, env, stdio: 'pipe' }.
+  - Buffer stdout/stderr (or provide streaming variant later if needed) and return combined strings.
+  - Implement timeout: on timeout, send SIGTERM, wait a short grace period, then SIGKILL if still alive. Return an indicative exitCode (e.g., -1) and append a standardized timeout message to stderr or include an additional diagnostic field (if the interface is extended later).
+  - Normalize line endings where tests rely on stable outputs.
+  - Avoid throwing for non-zero exit codes — return exitCode so callers can handle them consistently.
+- MockCommandRunner responsibilities:
+  - Provide declarative fixtures keyed by command + args, or accept a handler function for fine-grained simulation.
+  - Allow tests to configure delays for stdout/stderr to simulate streaming.
+  - Ensure mocks emulate the same exitCode / stdout / stderr semantics as RealCommandRunner to minimize drift.
+- Injection pattern:
+  - createExtensionContext(deps?: { commandRunner?: ICommandRunner, ...otherDeps }): ExtensionContext
+    - Default: deps.commandRunner = new RealCommandRunner()
+  - Tests call createExtensionContext({ commandRunner: new MockCommandRunner(...) })
+  - Optional test-only global setter:
+    - setGlobalCommandRunner(runner: ICommandRunner) throws unless process.env.VSCODE_GIT_ADR_TESTING === '1'
+    - Document this as legacy opt-in only.
+- Testing guidance:
+  - Unit tests should use MockCommandRunner for deterministic behavior.
+  - Add at least a small number of integration tests that exercise RealCommandRunner on CI to guard against mock drift (optional and runnable only in CI environments with the CLI installed).
+
+This ADR establishes a small, testable, maintainable abstraction for executing the git-adr CLI that supports comprehensive testing and a clean DI pattern while minimizing runtime overhead and implementation complexity.
