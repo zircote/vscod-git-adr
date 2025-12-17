@@ -8,6 +8,7 @@ This document provides a comprehensive guide for releasing new versions of the G
 - [Versioning Strategy](#versioning-strategy)
 - [Pre-Release Checklist](#pre-release-checklist)
 - [Release Process](#release-process)
+- [Tag Release (GitHub Actions)](#tag-release-github-actions)
 - [Marketplace Listing Guidelines](#marketplace-listing-guidelines)
 - [Troubleshooting](#troubleshooting)
 - [Support and Triage](#support-and-triage)
@@ -137,6 +138,33 @@ code --install-extension git-adr-vscode-X.Y.Z.vsix
 
 ## Release Process
 
+### Tag Release (GitHub Actions)
+
+This workflow is triggered by pushing a tag matching `v*.*.*` (for example `v0.2.1`). It validates the tag/version match, runs checks, packages a `.vsix`, and creates a GitHub Release that includes the `.vsix` and a `SHA256SUMS` file.
+
+1. Update the extension version in `package.json`.
+2. Update `CHANGELOG.md` with a section for the new version.
+3. Commit and merge the changes to `main`.
+
+```bash
+git add package.json package-lock.json CHANGELOG.md
+git commit -m "Release vX.Y.Z"
+git push origin main
+```
+
+4. Create and push the tag:
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+5. Find the release assets:
+   - GitHub Releases: contains the `.vsix` and `SHA256SUMS`.
+   - GitHub Actions run artifacts: also contains the packaged `.vsix` and `SHA256SUMS` (useful if the release step fails).
+
+Note: Marketplace publishing is intentionally not automated yet. A future workflow step can be enabled with a `VSCE_PAT` secret.
+
 ### Option A: Automated Release (Recommended)
 
 This is the primary release method using GitHub Actions.
@@ -190,23 +218,19 @@ git push origin v1.2.3
 1. Navigate to: Repository → Actions
 2. Watch the "Release" workflow execute
 3. Workflow stages:
-   - **Validate**: Checks tag version matches package.json
-   - **Build and Test**: Runs full CI pipeline
-   - **Package and Release**: Creates GitHub Release with .vsix
-   - **Publish Marketplace**: Publishes to VS Code Marketplace (if VSCE_PAT is configured)
+   - **Build/Test/Package**: Validates tag/version, lints/builds/tests, packages `.vsix`, generates `SHA256SUMS`, uploads artifacts
+   - **GitHub Release**: Creates (or updates) the GitHub Release and attaches `.vsix` + `SHA256SUMS`
 
 #### Step 5: Verify Release
 
 1. **GitHub Release**
    - Check https://github.com/zircote/vscod-git-adr/releases
    - Verify .vsix file is attached
-   - Verify checksums.txt is attached
+   - Verify SHA256SUMS is attached
 
 2. **VS Code Marketplace** (if auto-published)
-   - Visit https://marketplace.visualstudio.com/items?itemName=your-publisher-name.git-adr-vscode
-   - Verify new version appears (may take 5-10 minutes)
-   - Check that README renders correctly
-   - Verify install/update works in VS Code
+   - Marketplace publishing is currently manual (see Option B).
+   - When automated publishing is added later, it will use a `VSCE_PAT` repository secret.
 
 ### Option B: Manual Release (Fallback)
 

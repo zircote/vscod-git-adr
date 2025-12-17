@@ -9,11 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  build_and_test:
+  build_test_package:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -37,21 +34,106 @@ jobs:
             exit 1
           fi
 
-      - name: Lint
-        run: npm run lint
+      - name: Detect npm scripts
+        id: scripts
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const scripts = pkg.scripts ?? {};
 
-      - name: Compile
-        run: npm run compile
+          const has = (name) => Object.prototype.hasOwnProperty.call(scripts, name);
+
+          const outputs = {
+            has_lint: has('lint'),
+            has_compile: has('compile'),
+            has_build: has('build'),
+            has_test: has('test'),
+            has_test_integration: has('test:integration'),
+            has_package: has('package'),
+          };
+
+          const buildScript = outputs.has_compile ? 'compile' : (outputs.has_build ? 'build' : '');
+
+          const out = process.env.GITHUB_OUTPUT;
+          const lines = [
+            ...Object.entries(outputs).map(([k, v]) => `${k}=${v ? 'true' : 'false'}`),
+            `build_script=${buildScript}`,
+          ];
+          fs.appendFileSync(out, lines.join('\n') + '\n');
+          NODE
+
+      - name: Lint
+        if: steps.scripts.outputs.has_lint == 'true'
+        run: |
+          set -euo pipefail
+          npm run lint
+
+      - name: Build
+        if: steps.scripts.outputs.build_script != ''
+        run: |
+          set -euo pipefail
+          npm run "${{ steps.scripts.outputs.build_script }}"
 
       - name: Unit tests
-        run: xvfb-run -a npm test
+        if: steps.scripts.outputs.has_test == 'true'
+        run: |
+          set -euo pipefail
+          xvfb-run -a npm test
 
       - name: Integration tests
-        run: xvfb-run -a npm run test:integration
+        if: steps.scripts.outputs.has_test_integration == 'true'
+        run: |
+          set -euo pipefail
+          xvfb-run -a npm run test:integration
 
-  package_and_release:
+      - name: Package extension
+        id: package
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.scripts.outputs.has_package }}" = "true" ]; then
+            npm run package
+          else
+            npx --yes @vscode/vsce package
+          fi
+
+          mapfile -t VSIX_FILES < <(ls -1t *.vsix 2>/dev/null || true)
+          if [ "${#VSIX_FILES[@]}" -lt 1 ]; then
+            echo "No .vsix produced" >&2
+            ls -la
+            exit 1
+          fi
+
+          if [ "${#VSIX_FILES[@]}" -gt 1 ]; then
+            echo "Multiple .vsix found; selecting newest:" >&2
+            printf ' - %s\n' "${VSIX_FILES[@]}" >&2
+          fi
+
+          VSIX="${VSIX_FILES[0]}"
+          echo "vsix_name=$VSIX" >> "$GITHUB_OUTPUT"
+          echo "Selected VSIX: $VSIX"
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          sha256sum "${{ steps.package.outputs.vsix_name }}" > SHA256SUMS
+          echo "SHA256SUMS:";
+          cat SHA256SUMS
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: |
+            *.vsix
+            SHA256SUMS
+          retention-days: 30
+
+  github_release:
     runs-on: ubuntu-latest
-    needs: build_and_test
+    needs: build_test_package
 
     permissions:
       contents: write
@@ -59,63 +141,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 20.x
-          cache: 'npm'
+          name: package
+          path: dist
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Package extension
-        run: npm run package
-
-      - name: Generate SHA256
+      - name: Generate release notes
+        id: notes
         run: |
           set -euo pipefail
-          VSIX="$(ls -1 *.vsix | head -n 1)"
-          sha256sum "$VSIX" > "$VSIX.sha256"
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES_FILE="dist/RELEASE_NOTES.md"
+
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              function isTarget(line) {
+                return line ~ "^##[[:space:]]*\\[" ver "\\]" || line ~ "^##[[:space:]]*" ver "([[:space:]]|$)";
+              }
+              /^##[[:space:]]/ {
+                if (found && !isTarget($0)) exit;
+                if (isTarget($0)) found=1;
+              }
+              found { print }
+            ' CHANGELOG.md > "$NOTES_FILE" || true
+          fi
+
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf "Release v%s\n\n(See CHANGELOG.md for details.)\n" "$VERSION" > "$NOTES_FILE"
+          fi
+
+          echo "notes_path=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "Release notes preview:";
+          sed -n '1,120p' "$NOTES_FILE"
+
+      - name: List packaged files
+        run: |
+          set -euo pipefail
+          ls -la dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ steps.notes.outputs.notes_path }}
           files: |
-            *.vsix
-            *.vsix.sha256
+            dist/*.vsix
+            dist/SHA256SUMS
 
-  publish_marketplace:
-    runs-on: ubuntu-latest
-    needs: package_and_release
-
-    permissions:
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Ensure VSCE_PAT is configured
+      # Marketplace publishing is intentionally NOT enabled yet.
+      # When you're ready, add a VSCE_PAT repository secret and enable this step.
+      - name: Publish to VS Code Marketplace (disabled)
+        if: false
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
-          if [ -z "${VSCE_PAT:-}" ]; then
-            echo "Missing VSCE_PAT secret. Configure it in GitHub repo settings (Actions secrets)." >&2
-            exit 1
-          fi
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.x
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install vsce
-        run: npm i -g @vscode/vsce
-
-      - name: Publish to Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: vsce publish -p "$VSCE_PAT"
+          set -euo pipefail
+          npx --yes @vscode/vsce publish -p "$VSCE_PAT"
