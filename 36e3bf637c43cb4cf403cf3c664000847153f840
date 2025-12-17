@@ -1,0 +1,157 @@
+---
+date: '2025-12-17'
+id: 20251217-use-tag-based-github-actions-for-automated
+status: proposed
+title: Use tag-based GitHub Actions for automated releases
+---
+
+# Use tag-based GitHub Actions for automated releases
+
+## Context and Problem Statement
+We maintain a Visual Studio Code extension and need a reliable, auditable, and repeatable release process that produces a .vsix artifact, generates release metadata (changelog, SHA256 sums), attaches artifacts to a GitHub Release, and optionally publishes to the VS Code Marketplace. Releases must be reproducible, tied to a specific commit, and verifiable. Currently releases are manual / ad-hoc and prone to human error (mismatched versions, omission of artifacts, inconsistent release notes).
+
+We want an automated workflow that:
+- Is triggered by an explicit intent to release (version tag).
+- Builds, lints, and runs unit and integration tests before packaging.
+- Ensures the package.json version matches the tag.
+- Produces and uploads artifacts to GitHub Releases (vsix + SHA256SUMS).
+- Optionally publishes to Marketplace using a secret token.
+- Keeps minimal permissions and uses existing GitHub Actions tooling.
+
+## Decision Drivers
+- Automation: eliminate error-prone manual steps and enforce checks before publishing.
+- Reproducibility: artifact byte-for-byte repeatability where possible (npm ci, lockfile).
+- Traceability / Provenance: each release must map to a tag and commit; store artifact checksums.
+- Security / Minimal Privilege: use the least privileges and secrets needed for publishing.
+- Observability: release notes and commit references in releases for auditability.
+- Test gating: must run unit and integration tests before producing artifacts.
+- Integration with Marketplace: allow optional, explicit publish to the Marketplace using a secret.
+- Ease of maintenance: use standard GitHub Actions ecosystem and small scripts rather than heavy custom infra.
+
+## Considered Options
+- Manual releases
+  - Maintainers locally build, test, package vsce, create GitHub Release manually and upload assets.
+- Custom CI script executed out-of-band (e.g., a dedicated release server or a maintainer-run script)
+  - Script runs on a server or local machine; could be invoked from CI but not directly tied to Git tags.
+- Tag-based GitHub Actions release workflow (chosen)
+  - GitHub Actions workflow triggers on pushed tags that match a versioning pattern (v*.*.*).
+- Pull-request-based / release branch workflow
+  - Create a release branch or merge PR to a release-branch to trigger release pipeline.
+- Third-party release services (external CI/CD service)
+  - External services handle packaging and signing; introduces additional dependencies and cost.
+
+## Decision Outcome (Chosen option with justification)
+Chosen option: Use a tag-based GitHub Actions release workflow.
+
+Justification:
+- Tag-based trigger maps directly to semantic versioning and intent to release (push tag `vX.Y.Z`).
+- GitHub Actions is first-class for repository-integrated releases and can create GitHub Releases and upload assets with existing actions (minimal infra).
+- `npm ci` + package-lock.json ensures reproducible dependency installation for consistent builds.
+- Integrates test gating (unit + integration) before creating artifacts — prevents bad releases.
+- Releases created by the workflow include the commit SHA and tag in the release body for provenance.
+- Ability to optionally publish to the Marketplace using a secret token (VSCE_PAT) keeps Marketplace publish explicit and controlled.
+- Minimal required permissions (contents: write) using the repository GITHUB_TOKEN avoids adding more privileges than necessary.
+
+Implementation notes (concrete, technical)
+- Trigger:
+  - on:
+    - push:
+      - tags: ['v*.*.*']  # e.g., v0.2.1
+- Workflow steps (high-level):
+  - checkout repository with full history/tags:
+    - actions/checkout@v4 with fetch-depth: 0
+  - Setup Node:
+    - actions/setup-node@v4 (specify node-version, cache: 'npm')
+  - Install:
+    - npm ci
+  - Lint:
+    - npm run lint
+  - Compile:
+    - npm run build (or tsc)
+  - Unit tests:
+    - npm test
+  - Integration tests:
+    - Runs on ubuntu-latest with xvfb-run:
+      - xvfb-run --auto-servernum --server-args='-screen 0 1280x1024x24' npm run test:integration
+    - Integration tests can be skipped for non-Linux runners or run only on Linux in a matrix
+  - Version / tag consistency check:
+    - Extract tag: TAG=${GITHUB_REF#refs/tags/}
+    - Package version: PKG_VER=$(node -p "require('./package.json').version")
+    - Compare: if [ "$PKG_VER" != "${TAG#v}" ]; then echo "package.json version ($PKG_VER) != tag (${TAG#v})"; exit 1; fi
+  - Package:
+    - vsce package
+    - vsce produces e.g. my-extension-<version>.vsix
+  - Generate SHA256SUMS:
+    - sha256sum *.vsix > SHA256SUMS
+    - Optionally sign SHA256SUMS or attach a GPG signature if required
+  - Create GitHub Release and upload assets:
+    - Use an action such as softprops/action-gh-release or ncipollo/release-action to create the release for tag ${{ github.ref_name }} and upload .vsix and SHA256SUMS
+    - Ensure body contains commit SHA: ${{ github.sha }} and generated changelog snippet (e.g., from CHANGELOG.md or git log between tags)
+  - Optional Marketplace publish:
+    - If a secret VSCE_PAT is present and a workflow input flag publish_to_marketplace = true, run:
+      - npx vsce publish --pat ${{ secrets.VSCE_PAT }} --packagePath my-extension-<version>.vsix
+    - This step must be gated with an explicit approval or conditional to avoid accidental publishes.
+- Permissions:
+  - workflow-level permissions:
+    - contents: write  # required to create releases and upload release assets using GITHUB_TOKEN
+  - secrets:
+    - GITHUB_TOKEN (automatic) for release creation when using actions
+    - VSCE_PAT (optional) only for Marketplace publish
+- Required repository setup:
+  - Ensure package-lock.json (or yarn.lock) is committed
+  - Ensure RUNBOOK_RELEASE.md is added to repo root (see runbook below)
+  - Ensure actions/checkout fetch-depth is 0 so changelog generation and history-based checks are possible
+
+Runbook artifact:
+- RUNBOOK_RELEASE.md (checked into repo) contains:
+  - Versioning strategy (semver, prerelease rules)
+  - Changelog update instructions (how to update CHANGELOG.md or how changelog is auto-generated)
+  - Tagging process (how to create a tag locally and push, or how to create a release via GitHub UI)
+  - Manual verification checklist (install .vsix locally, confirm extension version in VS Code, smoke tests)
+  - Marketplace guidelines (how to use VSCE_PAT, when to publish automatically vs manual)
+  - Rollback instructions: how to deprecate a release (delete release + commit/tag rollback), or publish a patch release
+  - Troubleshooting: common failure modes (failed integration test on headless, mismatched version error)
+  - Location: ./RUNBOOK_RELEASE.md
+
+## Consequences
+
+Good
+- Automated and repeatable:
+  - Releasing is deterministic: tag => CI => artifacts => GitHub Release.
+  - Using npm ci and lock files reduces dependency variability.
+- Traceability and provenance:
+  - Each release has a tag and maps to a commit SHA in the release notes.
+  - SHA256SUMS provide artifact integrity checks; consumers can verify downloaded .vsix.
+- Faster, lower-effort releases:
+  - No manual packaging/upload step; maintainers only push a version tag.
+- Test gating:
+  - Unit + integration tests run before packaging, reducing chance of shipping broken releases.
+- Flexible Marketplace publishing:
+  - Marketplace publish is optional, controlled by VSCE_PAT and a conditional in the workflow.
+- Minimal permissions:
+  - Only contents: write is required for release creation/upload; no PAT is required for GitHub Releases (GITHUB_TOKEN is sufficient).
+- Rollback support:
+  - Releases can be unpublished and new patch tags created; artifacts attached to releases allow re-download.
+
+Bad
+- Security surface:
+  - Granting actions contents: write allows workflows to create releases and upload assets; any compromised workflow or token misuse could publish unauthorized artifacts. (Mitigation: restrict workflows, review third-party actions, keep secrets minimal.)
+  - Marketplace publish requires VSCE_PAT secret — if compromised, someone could publish malicious versions. (Mitigation: store in repository secrets, restrict who can modify workflows)
+- Potential for accidental publish:
+  - Pushing a tag with an incorrect version triggers the release pipeline. (Mitigation: version/tag check step prevents mismatched versions; require protected tag creation policy or branch protection workflows with review.)
+- Maintenance burden:
+  - Workflow must be maintained as code changes (build/test steps may change).
+  - Dependency on third-party Actions (softprops/ncipollo) — must monitor for security updates and deprecation.
+- Integration-test complexity:
+  - Integration tests may require headless X server (xvfb-run) or are flaky in CI; may need additional debug infrastructure.
+
+Neutral
+- Build/storage costs:
+  - Additional CI runtime and GitHub storage usage for release artifacts; typically acceptable but should be monitored.
+- Developer workflow change:
+  - Developers must push tags (or use a small helper script); overall workflow becomes slightly different but simpler.
+- Cross-platform nuances:
+  - Integration tests that rely on display must be limited to Linux runners with xvfb-run. Windows/macOS matrix items are possible for unit tests but integration runs may be Linux-only.
+
+Summary
+- We will implement a tag-based GitHub Actions release workflow triggered on tags matching v*.*.* that runs a well-defined pipeline: npm ci -> lint -> build -> test -> integration (xvfb-run on Linux) -> version/tag check -> package (vsce) -> generate SHA256SUMS -> create GitHub Release with .vsix and SHA256SUMS attached. The workflow will require contents: write permissions only, and an optional, gated step will publish to the VS Code Marketplace using a secret VSCE_PAT. A RUNBOOK_RELEASE.md documents the release process, verification steps, and rollback instructions. This provides an auditable, automated, and reproducible release mechanism while minimizing privileges and preserving manual controls where necessary.
