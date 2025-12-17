@@ -1,0 +1,93 @@
+---
+date: '2025-12-17'
+id: 20251217-target-local-vs-code-execution-only
+status: proposed
+title: Target local VS Code execution only
+---
+
+# Title
+Target local VS Code execution only
+
+## Context and Problem Statement
+We are building a VS Code extension that serves as a UI wrapper around the git-adr CLI (a command-line tool). The extension invokes the git executable and the git-adr CLI to read/write ADRs and run git operations. VS Code supports multiple execution environments: local, Remote - SSH, WSL, and Dev Containers. Supporting remote execution introduces significant complexity:
+
+- The extension would run on a different machine/container than the UI (extension host runs remotely) which changes where the git binary must be available and how filesystem URIs are handled.
+- PATH and environment are different on remote machines; locating and invoking the correct git binary requires remote detection and remote process spawning.
+- Remote filesystem URIs (vscode-remote://, wsl://, etc.) require use of the VS Code remote file APIs (workspace.fs) or tunneling, not simple Node fs APIs.
+- ExtensionKind configuration and marketplace installation behavior must be managed (UI vs workspace extension placement) to control where the extension is installed and executed.
+- Error scenarios multiply (remote permission/SSH key availability, containerized tooling not present, mismatched architectures).
+
+We must decide whether to support remote execution environments now, delay support, or target only local VS Code (the user's UI host).
+
+## Decision Drivers
+- Simplify implementation and testing to accelerate time-to-market.
+- Avoid fragile, environment-specific behavior (PATH differences, missing remote git installations).
+- Keep the codebase small and maintainable (no remote-specific branches).
+- Provide consistent, predictable UX that fails with clear messaging rather than partial/erratic behavior.
+- Minimize support surface and avoid remote-specific security/permission issues (SSH keys, container mount points).
+- Allow future extension without blocking initial release.
+
+## Considered Options
+- Target local VS Code only (extension runs only where the VS Code UI runs).
+- Full remote support: implement Remote - SSH, WSL, Dev Containers support so the extension can run on remote/workspace side and invoke git there.
+- Hybrid approach: keep core UI locally but implement a remote agent (small process or remote extension) that forwards git/git-adr invocations to the remote host.
+- Use VS Code Remote Development APIs and design extension to be installable as both UI and workspace extension with adaptive behavior (detect remote env and shift to remote execution as needed).
+
+## Decision Outcome
+Chosen option
+- Target local VS Code only.
+
+Justification (technical):
+- The extension invokes git and git-adr as local processes (child_process.spawn/exec). Targeting local execution means the extension can rely on the local PATH and native Node fs APIs to access repository files with file:// URIs and standard fs modules.
+- Remote support would require implementing remote process execution, mapping file URIs (vscode-remote/wsl) to remote operations, and additional packaging/extensionKind decisions. Those add substantial engineering overhead and fragile edge-cases (missing git on remote, differing PATHs, inaccessible SSH keys inside containers).
+- Git remotes (SSH URLs) do not imply the extension must run remotely: local git can still push/pull via SSH if the local environment has keys configured. Therefore, the extension can support typical Git remote workflows while still running locally.
+- By running only locally we can:
+  - Set extensionKind to ["ui"] in package.json to indicate UI-side execution and avoid remote workspace installation expectations.
+  - Implement process invocation reliably via Node child_process APIs and validate git availability with local checks (e.g., spawn('git', ['--version'])).
+  - Use standard fs APIs on workspace folders with file:// URIs and avoid handling vscode-remote or wsl URI schemes.
+  - Detect remote workspaces (vscode.env.remoteName present) and present a clear "not supported in remote development" message rather than failing unpredictably.
+
+Implementation notes to realize this decision:
+- package.json: set "extensionKind": ["ui"].
+- At activation time and on command invocation:
+  - Check vscode.env.remoteName (or other env indicators); if present, show a notification/information dialog informing user that remote environments are not supported and disable commands.
+  - Validate git availability via spawn('git', ['--version']) and validate git-adr CLI availability (spawn('git-adr', ['--version'])) in the local PATH; present actionable errors recommending installation or PATH fixes.
+  - Only accept workspace folders/files with file:// URIs. If a workspace contains remote URI schemes, present a clear error.
+- Document limitation in README and marketplace listing with guidance (clone repo locally, run VS Code locally).
+- Add telemetry/logging to identify how often users attempt to use the extension in remote environments (optional).
+
+## Consequences
+
+Good
+- Simpler codebase
+  - No remote-specific code paths for process execution or filesystem access.
+  - Avoids handling vscode-remote, wsl or other remote URI schemes.
+- More reliable local behavior
+  - Child_process-based git invocations are consistent with local PATH and environment.
+  - Reduced runtime error classes (no remote-related permission/SSH/container issues).
+- Faster development and shipping
+  - Reduced implementation and test matrix (no remote platforms to validate).
+  - Lower QA overhead and fewer user-facing error modes.
+- Clear failure semantics
+  - We can detect remote environment up-front and show a single, actionable message rather than obscure failures.
+
+Bad
+- Users in remote development scenarios (Remote - SSH, WSL, Dev Containers) cannot use the extension.
+  - They will receive a "not supported" notification and must either run VS Code locally or use another tool.
+- Potential increase in support requests and negative feedback from remote users until limitations are well-documented.
+- Rework required to add remote support later
+  - Implementing remote support later will require architectural changes (remote agent, workspace extension, or significant refactoring).
+  - Some design choices made for local-only (e.g., reliance on native fs and child_process) will need revisiting.
+- Marketplace/installation considerations
+  - Because of extensionKind set to UI, the extension will not be automatically installed on remote hosts which could be surprising to some users who expect remote install behavior.
+
+Neutral
+- Git remote operations still work
+  - Using SSH/HTTPS git remotes is unaffected as long as local git can access those remotes; this is neither benefit nor drawback of the choice but important to clarify.
+- No change to ADR content model or file format requirements
+  - The extension's ADR read/write semantics remain the same; only execution environment is constrained.
+- Possible future migration paths exist
+  - Migration options include adding a small remote helper (agent) or making the extension multi-kind; both are feasible but non-trivial.
+
+Summary
+- We will ship the git-adr VS Code extension as a local-only (UI-side) extension to reduce complexity and accelerate delivery. Remote environments will be explicitly detected and disabled with clear messaging and documentation. Support for remote execution can be considered as a separate, later engineering effort with the trade-offs and additional complexity documented and planned.
