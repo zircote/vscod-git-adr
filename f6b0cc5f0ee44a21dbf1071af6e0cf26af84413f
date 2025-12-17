@@ -1,0 +1,103 @@
+---
+date: '2025-12-17'
+id: 20251217-use-git-adr-uri-scheme-for-virtual-adr-documents
+status: proposed
+title: Use git-adr URI scheme for virtual ADR documents
+---
+
+# Title
+Use git-adr URI scheme for virtual ADR documents
+
+## Context and Problem Statement
+We are implementing a VS Code extension that integrates with the git-adr CLI to surface Architecture Decision Records (ADRs). Requirements and constraints:
+
+- We need a read-only, editor-like view of ADR content without creating temporary files on disk.
+- The view must integrate with standard VS Code editor features (tabs, search, diff, peek, keyboard navigation) and with the extension's Tree View (open on selection).
+- ADR content can come from different sources: regular repository files, ADR files in the workspace, and ADRs stored in git notes exposed via the git-adr CLI.
+- The extension must fetch current content from the git-adr CLI (e.g., `git adr show <id>`) on demand and be able to refresh on user request.
+- Avoid fragile implementations that create/clean up temp files, cause race conditions, or require complex file-system syncing.
+- Provide a straightforward URI scheme so editor APIs and other VS Code features can operate on ADRs as "documents".
+
+## Decision Drivers
+- Provide an editor-like, read-only view of ADRs without creating persistent temp files.
+- Full compatibility with VS Code TextDocument APIs (openTextDocument, showTextDocument, search, diff, tab management).
+- Easy integration with the extension Tree View (open document when user selects an ADR).
+- Support ADRs sourced from git notes or other non-file-backed storage exposed by the git-adr CLI.
+- Ability to refresh content on demand and to notify VS Code of content changes.
+- Deterministic, debuggable URIs for analytics, deep links, and internal routing.
+- Keep the implementation simple and maintainable (leverage VS Code extension APIs where possible).
+- Minimize security and performance risk (avoid unnecessary disk writes, avoid unbounded CLI calls).
+
+## Considered Options
+- Use a custom virtual document scheme (e.g., git-adr:) and implement a TextDocumentContentProvider that returns content from `git adr show <id>`.
+- Create temporary files on disk (in OS temp or workspace) containing ADR content and open them with file:// URIs; delete or reconcile after use.
+- Use VS Code WebView panels to render ADRs fetched from the CLI.
+- Open untitled/editable in-memory documents (vscode.workspace.openTextDocument({ content })) and mark them read-only by intercepting saves or by using an edit flow.
+- Use file-backed copies stored in a dedicated ADR folder inside the workspace (synchronise with git-adr output on demand).
+- Use an http(s) local server inside the extension and open http(s) URIs in the editor or webview.
+
+## Decision Outcome
+Chosen option
+- Use a custom virtual document scheme "git-adr:" and implement a TextDocumentContentProvider that returns ADR content by running the git-adr CLI (i.e., `git adr show <id>`). URIs follow the form:
+  - git-adr://<workspaceFolderName>/<adrId>.md
+  - The scheme is "git-adr", authority is workspaceFolderName, path is /<adrId>.md (percent-encoded as needed).
+- Implementation details:
+  - Register a TextDocumentContentProvider for scheme "git-adr".
+  - When a URI is opened, the provider's provideTextDocumentContent(uri) executes `git adr show <id>` with cwd set to the resolved workspace folder path (resolve workspaceFolderName to a workspace folder; if multiple folders share the same name, include disambiguation or fall back to folder index).
+  - If the CLI call succeeds, return the command's stdout as the document content.
+  - If the CLI call errors, return a small diagnostic content block describing the error (so an editor tab still opens and shows the problem).
+  - After opening a document, if the returned content appears to be markdown (heuristic: contains Markdown headings (#), fenced code blocks, or a .md extension in the URI), set language mode to "markdown" via vscode.languages.setTextDocumentLanguage on the opened document.
+  - Provide a command `gitAdr.refreshDocument` that triggers the provider to re-fetch content for a given URI and fire onDidChange (or equivalent) so the editor updates the open tab.
+  - Expose URIs for Tree View items (the Tree View will call showTextDocument(uri) which will invoke the provider).
+  - Ensure proper URI encoding for adrId and support adrIds that include slashes or special characters by percent-encoding the path.
+  - Implement caching and rate-limiting as needed: provider should not re-run the CLI on every read unless requested; onDidChange is used to control explicit refreshes.
+- Justification (how this satisfies drivers):
+  - Editor-like read-only view without temp files: virtual documents eliminate temporary disk files while looking and behaving like normal editor tabs.
+  - VS Code API compatibility: TextDocumentContentProvider and standard URI handling allow full use of editor features (search, diff, tabs).
+  - Tree View integration is trivial: storing the git-adr:// URI on each tree item and opening it calls the provider automatically.
+  - Git notes and other non-file sources are supported since the content is fetched via the git-adr CLI rather than by reading the filesystem.
+  - Refreshing is explicit and predictable via command `gitAdr.refreshDocument` and provider onDidChange events.
+  - Implementation is maintainable and relies on stable VS Code extension patterns.
+
+## Consequences
+
+Good
+- Read-only ADR view without temporary files:
+  - No on-disk temp files or cleanup needed; avoids file-system race conditions and permission issues.
+- Leverages VS Code editor features:
+  - Open ADRs behave like normal text editors (tabs, diff/compare, search within opened documents, peek references, keyboard navigation).
+- Seamless Tree View integration:
+  - Tree items can store and open git-adr:// URIs. Selection opens the virtual document via standard showTextDocument calls.
+- Supports ADRs in git notes and other non-file sources:
+  - Because content comes from `git adr show <id>`, ADRs that are not regular files (e.g., stored in git notes) are viewable just like file-backed ADRs.
+- Simple refresh model:
+  - `gitAdr.refreshDocument` plus provider onDidChange gives an explicit, user-driven way to update content and re-fetch current git content.
+- Better UX than WebView:
+  - Markdown and other language features (syntax highlighting, folding, quick outline) are available rather than needing to build custom renderers.
+
+Bad
+- Read-only by default; editing workflow complexity:
+  - Virtual documents provided by TextDocumentContentProvider are not file-writable. To edit an ADR the extension must implement an edit flow (e.g., run `git adr edit <id>` which opens the real file, or create a controlled editable temp file and apply changes through the CLI). Users cannot directly edit the git-adr:// document and save to update repository content.
+- Dependency on git-adr CLI:
+  - The provider must execute `git adr show`; the extension depends on the CLI being installed and discoverable (PATH or explicit config). Failures in the CLI cause failure-to-open or error content.
+- Potential for stale content and caching concerns:
+  - If underlying ADRs change externally (other processes or git operations), the virtual document may be stale until `gitAdr.refreshDocument` is invoked. Automatic polling would add complexity and performance impact.
+- URI uniqueness and workspaceFolderName collisions:
+  - Using workspaceFolderName in the authority can collide when multiple workspace folders share names. Need disambiguation strategy (e.g., append a short folder-id or use workspaceFolder index) which adds implementation complexity.
+- Performance implications when many documents are open:
+  - If many git-adr:// documents are opened simultaneously, the extension may run many CLI invocations. Must throttle or cache to avoid overload.
+- Not universally interoperable:
+  - Other tools or extensions that expect file:// URIs cannot open git-adr:// URIs by default. Integration with external tools will be limited to VS Code extension APIs.
+
+Neutral
+- Implementation complexity in URI handling:
+  - Need to handle percent-encoding, special characters in adrId, and mapping authority to a workspace folder path. This is manageable but must be implemented carefully.
+- Language detection heuristic:
+  - Using a simple heuristic to set "markdown" is pragmatic but imperfect. False positives/negatives may occur; however, users can always change the language mode manually.
+- Security considerations:
+  - Executing CLI commands requires attention to injection risks. Because command inputs are controlled by ADR ids generated by the extension (or selected by the user), risk is limited but still requires sanitization and robust error handling.
+- Cross-platform considerations:
+  - Running the git-adr CLI and encoding/decoding of URIs must be validated on Windows/macOS/Linux (path separators, shell quoting). This is solvable but requires tests.
+
+Summary
+- The git-adr:// virtual document approach best satisfies the drivers: it provides a read-only, editor-integrated view of ADRs (including git notes) without temp files, integrates with the Tree View, and reuses standard VS Code APIs. The main trade-offs are handling edits (need a separate edit flow), ensuring reliable CLI invocations, and addressing workspace name collisions and caching behavior. Implementing robust error handling, URI encoding, and a clear edit workflow mitigates the main downsides.
