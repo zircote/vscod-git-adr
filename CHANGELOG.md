@@ -5,6 +5,20 @@ All notable changes to the Git ADR extension will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2025-12-17 (Pre-release)
+
+### Added
+- Architecture Decision Records (ADRs) documenting key design decisions
+  - Local VS Code execution only (no remote SSH/WSL/DevContainers)
+  - CLI as source of truth for ADR operations
+  - JSON-first CLI output parsing with text fallback
+  - ICommandRunner interface for testable CLI execution
+  - Virtual document scheme (git-adr://) for ADR viewing
+  - Shell injection prevention via args array execution
+  - Mock-based testing without CLI dependency
+  - Tag-based GitHub Actions for automated releases
+- Pre-push hook for automatic ADR notes synchronization
+
 ## [0.1.0] - 2024-12-17
 
 ### Added
@@ -20,4 +34,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Basic parsing, logging, and deterministic tests
 
-[0.1.0]: https://github.com/zircote/vscod-git-adr/releases/tag/v0.1.0
+[0.1.1]: https://github.com/zircote/vscode-git-adr/releases/tag/v0.1.1
+[0.1.0]: https://github.com/zircote/vscode-git-adr/releases/tag/v0.1.0
