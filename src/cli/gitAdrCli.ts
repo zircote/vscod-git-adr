@@ -279,14 +279,20 @@ export class GitAdrCli {
 
     // Try JSON format first (preferred path)
     try {
+      this.logger.log(`Attempting JSON format: ${config.gitPath} ${config.adrSubcommand} list -f json`);
+      this.logger.log(`Working directory: ${workspaceFolder.uri.fsPath}`);
+
       const result = await this.runCommand(
         config.gitPath,
         [config.adrSubcommand, 'list', '-f', 'json'],
         workspaceFolder.uri.fsPath
       );
 
+      this.logger.log(`JSON command stdout length: ${result.stdout.length}`);
+      this.logger.log(`JSON command stdout preview: ${result.stdout.substring(0, 200)}`);
+
       const items = parseAdrListJson(result.stdout);
-      this.logger.log('ADR list source = json');
+      this.logger.log(`ADR list source = json (${items.length} items)`);
       return items;
     } catch (jsonError) {
       // Fallback to text parsing
