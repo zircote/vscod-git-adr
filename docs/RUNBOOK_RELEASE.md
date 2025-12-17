@@ -224,7 +224,7 @@ git push origin v1.2.3
 #### Step 5: Verify Release
 
 1. **GitHub Release**
-   - Check https://github.com/zircote/vscod-git-adr/releases
+   - Check https://github.com/zircote/vscode-git-adr/releases
    - Verify .vsix file is attached
    - Verify SHA256SUMS is attached
 
@@ -250,7 +250,7 @@ npm run package
 
 #### Step 3: Create GitHub Release Manually
 
-1. Go to https://github.com/zircote/vscod-git-adr/releases/new
+1. Go to https://github.com/zircote/vscode-git-adr/releases/new
 2. Choose tag: Create new tag `v1.2.3`
 3. Release title: `Release v1.2.3`
 4. Description: Copy relevant section from CHANGELOG.md
@@ -511,7 +511,7 @@ When users report issues, request the following:
 
 ### Issue Template Sections
 
-Create a GitHub issue template (`.github/ISSUE_TEMPLATE/bug_report.md`):
+The project uses GitHub YAML-based issue forms (`.github/ISSUE_TEMPLATE/bug_report.yml`). Example format:
 
 ```markdown
 ## Environment
@@ -640,8 +640,8 @@ git push origin :refs/tags/v1.2.3
 
 ## Contacts and Resources
 
-- **GitHub Repository:** https://github.com/zircote/vscod-git-adr
-- **Issue Tracker:** https://github.com/zircote/vscod-git-adr/issues
+- **GitHub Repository:** https://github.com/zircote/vscode-git-adr
+- **Issue Tracker:** https://github.com/zircote/vscode-git-adr/issues
 - **VS Code Marketplace:** https://marketplace.visualstudio.com/vscode
 - **VS Code Extension API:** https://code.visualstudio.com/api
 - **git-adr Project:** https://github.com/zircote/git-adr
