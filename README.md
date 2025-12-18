@@ -1,6 +1,6 @@
 # Git ADR for VS Code
 
-![CI](https://github.com/zircote/vscod-git-adr/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/zircote/vscode-git-adr/actions/workflows/ci.yml/badge.svg)
 
 Manage Architecture Decision Records (ADRs) stored in git notes directly within VS Code.
 
@@ -101,7 +101,7 @@ This extension does not collect any telemetry or user data.
 
 ## Contributing
 
-Issues and pull requests are welcome at [https://github.com/zircote/vscod-git-adr](https://github.com/zircote/vscod-git-adr)
+Issues and pull requests are welcome at [https://github.com/zircote/vscode-git-adr](https://github.com/zircote/vscode-git-adr)
 
 ## Development
 

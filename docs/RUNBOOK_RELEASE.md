@@ -610,10 +610,10 @@ vsce publish 1.2.3
 vsce publish patch
 
 # List published versions
-vsce show your-publisher-name.git-adr-vscode
+vsce show zircote.git-adr-vscode
 
 # Unpublish version (use with caution!)
-vsce unpublish your-publisher-name.git-adr-vscode@1.2.3
+vsce unpublish zircote.git-adr-vscode@1.2.3
 ```
 
 ### Git Tag Commands

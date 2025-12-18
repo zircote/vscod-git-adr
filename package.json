@@ -1,13 +1,13 @@
 {
   "name": "git-adr-vscode",
-  "displayName": "Git ADR",
+  "displayName": "git-adr",
   "description": "Manage Architecture Decision Records stored in git notes",
-  "version": "0.1.8",
-  "publisher": "your-publisher-name",
+  "version": "0.1.9",
+  "publisher": "zircote",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zircote/vscod-git-adr"
+    "url": "https://github.com/zircote/vscode-git-adr"
   },
   "engines": {
     "vscode": "^1.85.0"

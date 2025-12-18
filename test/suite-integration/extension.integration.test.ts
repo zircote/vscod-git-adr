@@ -69,7 +69,7 @@ class HybridCommandRunner implements ICommandRunner {
 
 function extensionId(): string {
   // Matches package.json (publisher + name)
-  return 'your-publisher-name.git-adr-vscode';
+  return 'zircote.git-adr-vscode';
 }
 
 async function readFixture(rel: string): Promise<string> {

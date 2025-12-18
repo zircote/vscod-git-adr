@@ -5,7 +5,28 @@ All notable changes to the Git ADR extension will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] - 2025-12-17 (Pre-release)
+## [0.1.9] - 2025-12-17
+
+### Changed
+- Synchronized CHANGELOG with actual release history
+
+## [0.1.8] - 2025-12-17
+
+### Fixed
+- Parser now correctly sanitizes JSON control characters only inside string literals, preventing corruption of valid JSON structure
+
+### Changed
+- Updated GitHub Actions dependencies:
+  - actions/checkout from 4 to 6
+  - actions/download-artifact from 4 to 7
+  - actions/setup-node from 4 to 6
+  - actions/upload-artifact from 4 to 6
+- Updated TypeScript to 5.9.3
+
+### Docs
+- Fixed broken links and typos in RUNBOOK_RELEASE.md
+
+## [0.1.1] - 2025-12-17
 
 ### Added
 - Architecture Decision Records (ADRs) documenting key design decisions
@@ -18,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Mock-based testing without CLI dependency
   - Tag-based GitHub Actions for automated releases
 - Pre-push hook for automatic ADR notes synchronization
+- JSON UI data model for ADR list parsing
+- GitHub ecosystem and Copilot configuration
+- Copilot instructions for the repository
+
+### Changed
+- Reorganized documentation into docs/ directory
 
 ## [0.1.0] - 2024-12-17
 
@@ -34,5 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Basic parsing, logging, and deterministic tests
 
+[0.1.9]: https://github.com/zircote/vscode-git-adr/releases/tag/v0.1.9
+[0.1.8]: https://github.com/zircote/vscode-git-adr/releases/tag/v0.1.8
 [0.1.1]: https://github.com/zircote/vscode-git-adr/releases/tag/v0.1.1
 [0.1.0]: https://github.com/zircote/vscode-git-adr/releases/tag/v0.1.0
